@@ -24,13 +24,33 @@ Image=quay.io/prometheus/node-exporter:v1.8.2
 # because the network collector should see the host's interfaces.
 Network=host
 
+# keep-id maps this user to the same uid inside, so the container can read a
+# 0700 home. Without it node_exporter runs as nobody(65534), which maps to a
+# subuid that cannot traverse /home/malahmen.
+# Maps THIS user onto the image's own nobody(65534), rather than overriding the
+# image's user or hardcoding a uid. Without it node_exporter runs as a subuid
+# that cannot traverse a 0700 home — and /home/<user> and .local/state are both
+# 0700 on Fedora, so the textfile mount succeeded while every read of it failed
+# with "permission denied".
+UserNS=keep-id:uid=65534,gid=65534
+
 # The whole root filesystem read-only at /host, which is how node_exporter
 # expects to see a host from inside a container (--path.rootfs below).
 Volume=/:/host:ro,rslave
 
 # Where arakyd writes its .prom file. Read-only here: the exporter reads, the
 # timer writes.
-Volume=%h/.local/state/arakyd:/textfile:ro
+# `,z` is load-bearing. Without the SELinux relabel the container can stat this
+# directory but not open it: `ls -ld` works, `ls -l` fails. The tell is
+# opts=[rbind] with no z in `podman inspect`, and no AVC in the audit log,
+# because the denial is on the object's label rather than on a rule.
+Volume=%h/.local/state/arakyd:/textfile:ro,z
+
+# udev's database, for diskstats' device model/serial labels. NOT relabelled
+# (:z would change a system directory's SELinux label and could break udev) —
+# if SELinux denies it, dropping the diskstats collector is the right trade,
+# not relabelling /run.
+Volume=/run/udev/data:/run/udev/data:ro
 
 ReadOnly=true
 NoNewPrivileges=true
@@ -42,7 +62,12 @@ Exec=--path.rootfs=/host \
      --collector.cpu \
      --collector.cpufreq \
      --collector.diskstats \
-     --collector.filesystem \
+     # --collector.filesystem is deliberately ABSENT. With / bind-mounted at
+     # /host, node_exporter sees tmpfs mounts twice — once as the container's
+     # own /tmp and once as /host/tmp, which --path.rootfs strips back to /tmp —
+     # and every scrape logged 14 "collected before with the same name and
+     # label values" errors. Nothing here needs it; adding it back means
+     # excluding the container's own mounts first.
      --collector.hwmon \
      --collector.loadavg \
      --collector.meminfo \
