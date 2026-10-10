@@ -46,7 +46,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"hosts\"}",
+          "expr": "max by (instance) (up{job=\"hosts\"})",
           "legendFormat": "{{instance}}",
           "datasource": {
             "type": "prometheus",
@@ -87,7 +87,7 @@
         },
         "overrides": []
       },
-      "description": "1 = the scrape succeeded. 0 = it failed, which is the host being off OR node_exporter not running \u2014 those are indistinguishable from here. No data at all means the scrape job itself is gone, which is a monitoring failure rather than a host one.",
+      "description": "1 = the scrape succeeded. 0 = it failed, which is the host being off OR node_exporter not running \u2014 those are indistinguishable from here. No data at all means the scrape job itself is gone, which is a monitoring failure rather than a host one. Wrapped in max by (instance) so one row appears per host however many series carry that instance. Two things produce more: a label change on the scrape job leaves the old label set inside Mimir's 5-minute lookback, so an instant query briefly returns both (the role -> host_role rename did exactly that, and showed meksha as UP and DOWN at once); and Alloy is a DaemonSet, so a second node would scrape these targets twice, permanently. max is the right reduction for 'is it reachable' \u2014 if anything reached it, it is up.",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -163,7 +163,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "arakyd_collector_success",
+          "expr": "max by (instance) (arakyd_collector_success)",
           "legendFormat": "{{instance}}",
           "datasource": {
             "type": "prometheus",
@@ -204,7 +204,7 @@
         },
         "overrides": []
       },
-      "description": "node_exporter being up does not mean arakyd ran. 0 here with the host UP means the collector or its timer is broken \u2014 the one failure mode 'up' cannot show you.",
+      "description": "node_exporter being up does not mean arakyd ran. 0 here with the host UP means the collector or its timer is broken \u2014 the one failure mode 'up' cannot show you. Wrapped in max by (instance) so one row appears per host however many series carry that instance. Two things produce more: a label change on the scrape job leaves the old label set inside Mimir's 5-minute lookback, so an instant query briefly returns both (the role -> host_role rename did exactly that, and showed meksha as UP and DOWN at once); and Alloy is a DaemonSet, so a second node would scrape these targets twice, permanently. max is the right reduction for 'is it reachable' \u2014 if anything reached it, it is up.",
       "options": {
         "reduceOptions": {
           "calcs": [
