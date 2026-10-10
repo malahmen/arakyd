@@ -1,0 +1,62 @@
+# node_exporter for corelia, as a rootless podman container.
+#
+# Install (user scope — corelia is deliberately NOT under Ansible, so this is
+# yours to manage):
+#   mkdir -p ~/.config/containers/systemd
+#   cp quadlet/arakyd-node-exporter.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user start arakyd-node-exporter
+#   loginctl enable-linger "$USER"      # so it survives logout
+#
+# The image tag is PINNED. Bump it deliberately, the way kuat pins versions in
+# group_vars/all.yml — a monitoring agent that changes under you is a
+# monitoring agent you cannot trust a graph from.
+[Unit]
+Description=node_exporter — host metrics for arakyd
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=arakyd-node-exporter
+Image=quay.io/prometheus/node-exporter:v1.8.2
+
+# Host network, because the point is to be scraped on this host's address, and
+# because the network collector should see the host's interfaces.
+Network=host
+
+# The whole root filesystem read-only at /host, which is how node_exporter
+# expects to see a host from inside a container (--path.rootfs below).
+Volume=/:/host:ro,rslave
+
+# Where arakyd writes its .prom file. Read-only here: the exporter reads, the
+# timer writes.
+Volume=%h/.local/state/arakyd:/textfile:ro
+
+ReadOnly=true
+NoNewPrivileges=true
+
+Exec=--path.rootfs=/host \
+     --collector.textfile.directory=/textfile \
+     --web.listen-address=:9100 \
+     --collector.disable-defaults \
+     --collector.cpu \
+     --collector.cpufreq \
+     --collector.diskstats \
+     --collector.filesystem \
+     --collector.hwmon \
+     --collector.loadavg \
+     --collector.meminfo \
+     --collector.netdev \
+     --collector.pressure \
+     --collector.stat \
+     --collector.textfile \
+     --collector.thermal_zone \
+     --collector.uname \
+     --collector.vmstat
+
+[Service]
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

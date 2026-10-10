@@ -1,0 +1,44 @@
+// Scrape job for the manifests repo's apps/alloy.yaml — paste this inside the
+// existing `alloy: configMap: content: |` block, beside prometheus.scrape
+// "kubelet" and friends.
+//
+// It does NOT belong in this repository to be deployed from: Argo CD reconciles
+// `manifests`, so that is the only place a change here takes effect. This file
+// is the source of truth for the text; copying it across is a deliberate step.
+//
+// Hosts are listed statically because there are two of them and they do not
+// come and go. Service discovery for a two-row list is machinery with nothing
+// to discover.
+//
+// NOTE, and it is the reason this is a snippet rather than a patch: Alloy runs
+// as a DaemonSet here. A static target is therefore scraped by EVERY Alloy pod.
+// With one node that is exactly one scrape and harmless. With two it is
+// duplicate series, distinguishable only by the pod that produced them. Before
+// adding a node, either move this to a single-replica Alloy Deployment for
+// external targets, or enable the chart's clustering.
+
+prometheus.scrape "hosts" {
+  targets = [
+    // corelia: the workstation. Manually managed — it is deliberately outside
+    // Ansible's scope — so treat its absence as normal, not as an incident.
+    {
+      __address__ = "192.168.3.46:9100",
+      instance    = "corelia",
+      role        = "workstation",
+    },
+    // meksha: the server. This one being down IS an incident.
+    {
+      __address__ = "192.168.3.52:9100",
+      instance    = "meksha",
+      role        = "server",
+    },
+  ]
+
+  // 30s matches arakyd's timer. Scraping faster than the textfile is written
+  // produces repeated samples of the same reading, which looks like data and
+  // is not.
+  scrape_interval = "30s"
+  scrape_timeout  = "10s"
+
+  forward_to = [prometheus.remote_write.mimir.receiver]
+}

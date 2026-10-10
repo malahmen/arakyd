@@ -1,0 +1,17 @@
+# Every 30 seconds. The file only has to be fresher than the scrape interval,
+# and temperatures do not need 15-second resolution — this is a tradeoff
+# against waking a oneshot unit twice as often, all day, on a desktop.
+#
+# If you lower it, lower the scrape interval too, or you are generating samples
+# nothing reads.
+[Unit]
+Description=Run arakyd's collector periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=arakyd-collector.service
+
+[Install]
+WantedBy=timers.target

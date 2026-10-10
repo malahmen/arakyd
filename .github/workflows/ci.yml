@@ -1,0 +1,46 @@
+name: ci
+
+# Every push and pull request. The suite needs no network, no root and no
+# particular hardware: the collector is driven against a fabricated sysfs tree,
+# which is the only way to test a thing whose whole job is knowing about one
+# machine.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions
+        run: |
+          bash --version | head -1
+          shellcheck --version | sed -n 2p
+          python3 --version
+
+      - name: shellcheck
+        # Globbed, not listed: a named list quietly stops covering the next
+        # test file somebody adds.
+        run: shellcheck arakyd.sh tests/*.sh
+
+      - name: systemd units parse
+        # systemd-analyze verify catches a typo'd directive, which otherwise
+        # surfaces as a unit that silently does not start.
+        run: |
+          sudo apt-get install -y --no-install-recommends systemd >/dev/null
+          for u in quadlet/*.service quadlet/*.timer; do
+            systemd-analyze verify "$u" 2>&1 | grep -viE 'command .* is not executable|Unit .* not found' || true
+          done
+
+      - name: the dashboard is valid JSON
+        run: python3 -m json.tool deploy/grafana-hosts-dashboard.json > /dev/null
+
+      - name: tests
+        run: tests/run-all.sh
