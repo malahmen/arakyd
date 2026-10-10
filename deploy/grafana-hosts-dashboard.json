@@ -118,7 +118,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - timestamp(last_over_time(up{job=\"hosts\"}[7d]) == 1)",
+          "expr": "time() - max by (instance) (last_over_time(timestamp(up{job=\"hosts\"} == 1)[7d:1m]))",
           "legendFormat": "{{instance}}",
           "datasource": {
             "type": "prometheus",
@@ -132,7 +132,7 @@
         },
         "overrides": []
       },
-      "description": "Seconds since the last successful scrape. This is what turns an empty graph into 'corelia was off from 14:02'.",
+      "description": "Seconds since the last successful scrape. timestamp() is applied INSIDE and carried by a subquery: timestamp() of an already-filtered instant vector returns the evaluation time, not the sample's, which reads as 0 forever.",
       "options": {
         "reduceOptions": {
           "calcs": [

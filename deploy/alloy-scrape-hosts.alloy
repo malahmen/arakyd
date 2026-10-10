@@ -17,26 +17,42 @@
 // adding a node, either move this to a single-replica Alloy Deployment for
 // external targets, or enable the chart's clustering.
 
+// NOTE the label is host_role, not role. A target label collides
+// with a metric label of the same name, and the metric's loses:
+// Prometheus renames it to exported_role (honor_labels is false by
+// default). arakyd emits role="cpu"/"igpu"/"nvme" on its
+// temperature series and was there first, so the TARGET label is
+// the one that had to move. Symptom was a temperature panel
+// returning zero series while the data was present all along.
 prometheus.scrape "hosts" {
   targets = [
-    // corelia: the workstation. Manually managed — it is deliberately outside
-    // Ansible's scope — so treat its absence as normal, not as an incident.
+    // corelia: the workstation, and the machine with the cores and
+    // the models. Manually managed — deliberately outside Ansible's
+    // scope — so treat its absence as normal rather than as an
+    // incident. arakyd_* series come from its textfile collector.
     {
-      __address__ = "192.168.3.46:9100",
-      instance    = "corelia",
-      role        = "workstation",
+      "__address__" = "192.168.3.46:9100",
+      "instance"    = "corelia",
+      "host_role"   = "workstation",
     },
-    // meksha: the server. This one being down IS an incident.
+    // meksha: this node. Its being down IS an incident.
     {
-      __address__ = "192.168.3.52:9100",
-      instance    = "meksha",
-      role        = "server",
+      "__address__" = "192.168.3.52:9100",
+      "instance"    = "meksha",
+      "host_role"   = "server",
     },
   ]
 
-  // 30s matches arakyd's timer. Scraping faster than the textfile is written
-  // produces repeated samples of the same reading, which looks like data and
-  // is not.
+  // Declared, not inherited. With job_name unset, `job` defaults to
+  // the component's full name (prometheus.scrape.hosts), so a query
+  // filtering job="hosts" silently returns no series. Nothing else in
+  // this file sets it, which means there is no local convention to
+  // follow — so it is stated.
+  job_name = "hosts"
+
+  // 30s matches arakyd's timer on corelia. Scraping faster than the
+  // textfile is rewritten yields repeated samples of one reading,
+  // which looks like data and is not.
   scrape_interval = "30s"
   scrape_timeout  = "10s"
 
