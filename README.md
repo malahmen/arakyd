@@ -86,6 +86,26 @@ curl -s localhost:9100/metrics | grep '^arakyd_'
 The container image tag is **pinned**. Bump it deliberately — a monitoring
 agent that changes underneath you is one you cannot trust a graph from.
 
+### If `arakyd_` metrics are missing but `node_` ones are there
+
+```
+level=error collector=textfile msg="failed to read textfile collector directory"
+  path=/textfile err="open /textfile: permission denied"
+```
+
+Two separate causes, both handled in the shipped unit, both worth recognising
+if you move the state directory:
+
+- **SELinux.** The mount needs `,z`. The tell is that `ls -ld /textfile` works
+  inside the container while `ls -l` fails — stat is allowed, open is not — and
+  `podman inspect` shows `opts=[rbind]` with no `z`. There is no AVC in the
+  audit log, because the denial is about the object's label rather than a rule.
+- **The user namespace.** `/home/<user>` and `.local/state` are both `0700` on
+  Fedora, and the image runs as `nobody(65534)`, which maps to a subuid that
+  cannot traverse them. `UserNS=keep-id:uid=65534,gid=65534` maps *this* user
+  onto that uid, so the container reads exactly what you can read — without
+  overriding the image's user or hardcoding a uid.
+
 ## Getting it into Grafana
 
 Two files in `deploy/`, both of which belong in the **`manifests`** repository,
