@@ -429,6 +429,15 @@
             "type": "prometheus",
             "uid": "mimir"
           }
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "mimir"
+          },
+          "expr": "node_hwmon_temp_celsius{job=\"hosts\",instance!=\"corelia\",chip=~\"platform_coretemp.*|nvme.*\"}",
+          "legendFormat": "{{instance}} {{chip}} ({{sensor}})"
         }
       ],
       "fieldConfig": {
@@ -437,7 +446,7 @@
         },
         "overrides": []
       },
-      "description": "Labelled by role by arakyd. node_exporter's own node_hwmon_temp_celsius is keyed by a chip path like pci0000:00_0000:00:18_3, which is correct and unreadable; turning that into 'CPU' needs a two-hop join through node_hwmon_chip_names."
+      "description": "Two sources, because only corelia runs arakyd. Its series are labelled by role (cpu, igpu, nvme) because arakyd applies that mapping at collection. Other hosts fall back to node_exporter's own hwmon collector, keyed by chip \u2014 platform_coretemp_0, nvme_nvme0 \u2014 hence the different legend shape. corelia is EXCLUDED from that second query rather than the query being pinned to one host: corelia's nvme appears in both, so without the exclusion its disk temperature is drawn twice."
     },
     {
       "id": 31,
