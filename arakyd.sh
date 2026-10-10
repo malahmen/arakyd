@@ -60,7 +60,7 @@ _esc() { printf '%s' "${1//\\/\\\\}" | sed 's/"/\\"/g' | tr -d '\n'; }
 # against a sensor that reads "N/A" or goes absent between glob and read.
 _num() {
     local v
-    v="$(cat "$1" 2>/dev/null | head -1 || true)"
+    v="$(head -1 "$1" 2>/dev/null || true)"
     [[ "$v" =~ ^-?[0-9]+$ ]] && printf '%s' "$v"
 }
 

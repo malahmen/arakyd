@@ -147,6 +147,13 @@ until it silently reports the wifi chip's temperature as the CPU's. One check
 builds the same hardware at different `hwmonN` numbers and asserts the output
 is byte-identical.
 
+CI lints with `shellcheck -S warning`, like every sibling repo. Without the
+severity flag the build depends on which *style* checks the runner's shellcheck
+happens to enable by default — 0.11.0 has SC2002 off, the Ubuntu runner's older
+build has it on — so a clean local run did not mean a green CI run. The
+versions step prints both, which is what makes that visible rather than
+puzzling.
+
 Two bugs the suite caught before this ever ran anywhere:
 
 - `find -name 'hwmon*'` also matches the **parent** directory `class/hwmon`, so

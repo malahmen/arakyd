@@ -26,9 +26,15 @@ jobs:
           python3 --version
 
       - name: shellcheck
+        # -S warning, matching every sibling repo. Without it the build depends
+        # on which style checks the runner's shellcheck happens to enable by
+        # default: 0.11.0 has SC2002 off, the runner's older build has it on,
+        # so "clean locally" did not mean "green in CI". The version printed
+        # above is what makes that visible next time.
+        #
         # Globbed, not listed: a named list quietly stops covering the next
         # test file somebody adds.
-        run: shellcheck arakyd.sh tests/*.sh
+        run: shellcheck -S warning arakyd.sh tests/*.sh
 
       - name: systemd units parse
         # systemd-analyze verify catches a typo'd directive, which otherwise
