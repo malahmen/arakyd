@@ -19,6 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: tools
+        # Installed rather than assumed. GitHub's runner image ships shellcheck;
+        # the Gitea runner's job image (catthehacker/ubuntu:act-22.04, kuat's
+        # gitea_runner) has neither shellcheck nor apt package lists, so the
+        # Versions step and the old `apt-get install systemd` both failed there
+        # before a line of this repository was checked - and once a branch
+        # protection rule requires this job, a failure for the image's sake
+        # blocks every merge.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck systemd >/dev/null
+
       - name: Versions
         run: |
           bash --version | head -1
@@ -40,7 +52,6 @@ jobs:
         # systemd-analyze verify catches a typo'd directive, which otherwise
         # surfaces as a unit that silently does not start.
         run: |
-          sudo apt-get install -y --no-install-recommends systemd >/dev/null
           for u in quadlet/*.service quadlet/*.timer; do
             systemd-analyze verify "$u" 2>&1 | grep -viE 'command .* is not executable|Unit .* not found' || true
           done
