@@ -6,7 +6,7 @@
 #   cp quadlet/arakyd-node-exporter.container ~/.config/containers/systemd/
 #   systemctl --user daemon-reload
 #   systemctl --user start arakyd-node-exporter
-#   loginctl enable-linger "$USER"      #  so it survives logout
+#   loginctl enable-linger "$USER"      # so it survives logout
 #
 # The image tag is PINNED. Bump it deliberately, the way kuat pins versions in
 # group_vars/all.yml — a monitoring agent that changes under you is a
