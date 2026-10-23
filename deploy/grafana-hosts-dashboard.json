@@ -163,7 +163,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (instance) (arakyd_collector_success)",
+          "expr": "max by (instance) (arakyd_collector_success + 2 * (timestamp(arakyd_collector_last_run_seconds) - arakyd_collector_last_run_seconds > bool 90))",
           "legendFormat": "{{instance}}",
           "datasource": {
             "type": "prometheus",
@@ -186,6 +186,16 @@
                   "text": "OK",
                   "color": "green",
                   "index": 1
+                },
+                "2": {
+                  "text": "STOPPED",
+                  "color": "red",
+                  "index": 3
+                },
+                "3": {
+                  "text": "STOPPED",
+                  "color": "red",
+                  "index": 4
                 }
               }
             },
@@ -204,7 +214,7 @@
         },
         "overrides": []
       },
-      "description": "node_exporter being up does not mean arakyd ran. 0 here with the host UP means the collector or its timer is broken \u2014 the one failure mode 'up' cannot show you. Wrapped in max by (instance) so one row appears per host however many series carry that instance. Two things produce more: a label change on the scrape job leaves the old label set inside Mimir's 5-minute lookback, so an instant query briefly returns both (the role -> host_role rename did exactly that, and showed meksha as UP and DOWN at once); and Alloy is a DaemonSet, so a second node would scrape these targets twice, permanently. max is the right reduction for 'is it reachable' \u2014 if anything reached it, it is up.",
+      "description": "node_exporter being up does not mean arakyd ran. FAILING: the collector ran and read nothing (no temperature, or a GPU whose readings are gone). STOPPED: the file node_exporter serves is over 90 s old at scrape (the timer runs every 30 s), so nothing is rewriting it - a disabled timer, a removed script, a unit failing before it starts - while success still reads 1 in it; success alone cannot show this (Kamino item 131). Wrapped in max by (instance) so one row appears per host however many series carry that instance. Two things produce more: a label change on the scrape job leaves the old label set inside Mimir's 5-minute lookback, so an instant query briefly returns both (the role -> host_role rename did exactly that, and showed meksha as UP and DOWN at once); and Alloy is a DaemonSet, so a second node would scrape these targets twice, permanently. max is the right reduction for 'is it reachable' \u2014 if anything reached it, it is up.",
       "options": {
         "reduceOptions": {
           "calcs": [
@@ -450,7 +460,7 @@
     },
     {
       "id": 31,
-      "title": "iGPU package power",
+      "title": "APU package power (PPT)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",

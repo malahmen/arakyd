@@ -50,11 +50,26 @@ jobs:
 
       - name: systemd units parse
         # systemd-analyze verify catches a typo'd directive, which otherwise
-        # surfaces as a unit that silently does not start.
+        # surfaces as a unit that silently does not start. It also complains
+        # that %h/.local/bin/arakyd.sh is not there, which on a runner it is
+        # not; that line is expected and filtered, and ANY other line fails
+        # the step. It used to pipe into `grep ... || true`, which could not
+        # fail (Kamino item 133).
         run: |
-          for u in quadlet/*.service quadlet/*.timer; do
-            systemd-analyze verify "$u" 2>&1 | grep -viE 'command .* is not executable|Unit .* not found' || true
-          done
+          out="$(for u in quadlet/*.service quadlet/*.timer; do
+                   systemd-analyze verify "$u" 2>&1
+                 done | grep -viE 'is not executable|Unit .* not found|No such file or directory|Failed to prepare filename' || true)"
+          if [ -n "$out" ]; then printf '%s\n' "$out"; exit 1; fi
+
+      - name: the quadlet container generates
+        # quadlet (podman >= 4.4) turns the .container into a unit; an error
+        # there is a container that never starts. The Gitea runner's job image
+        # has no podman, so this says it skipped rather than passing quietly.
+        run: |
+          q=/usr/libexec/podman/quadlet
+          if [ ! -x "$q" ]; then echo "SKIP: no quadlet on this runner - the .container is not checked here"; exit 0; fi
+          QUADLET_UNIT_DIRS="$PWD/quadlet" "$q" -user -dryrun > /tmp/quadlet.out 2>&1 || { cat /tmp/quadlet.out; exit 1; }
+          grep -q '^ExecStart=.*node-exporter' /tmp/quadlet.out || { cat /tmp/quadlet.out; exit 1; }
 
       - name: the dashboard is valid JSON
         run: python3 -m json.tool deploy/grafana-hosts-dashboard.json > /dev/null

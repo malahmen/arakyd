@@ -24,9 +24,6 @@ Image=quay.io/prometheus/node-exporter:v1.8.2
 # because the network collector should see the host's interfaces.
 Network=host
 
-# keep-id maps this user to the same uid inside, so the container can read a
-# 0700 home. Without it node_exporter runs as nobody(65534), which maps to a
-# subuid that cannot traverse /home/malahmen.
 # Maps THIS user onto the image's own nobody(65534), rather than overriding the
 # image's user or hardcoding a uid. Without it node_exporter runs as a subuid
 # that cannot traverse a 0700 home — and /home/<user> and .local/state are both
@@ -34,9 +31,13 @@ Network=host
 # with "permission denied".
 UserNS=keep-id:uid=65534,gid=65534
 
-# The whole root filesystem read-only at /host, which is how node_exporter
-# expects to see a host from inside a container (--path.rootfs below).
-Volume=/:/host:ro,rslave
+# /proc and /sys only - not the whole root filesystem. With keep-id the
+# container reads what this user can, so `/:/host` put ~/.ssh and the rest of
+# home behind an unauthenticated :9100 (Kamino item 133). None of the
+# collectors below reads anything else: with these two mounts it served the
+# same 199 metric families, every collector reporting success.
+Volume=/proc:/host/proc:ro,rslave
+Volume=/sys:/host/sys:ro,rslave
 
 # Where arakyd writes its .prom file. Read-only here: the exporter reads, the
 # timer writes.
@@ -55,19 +56,17 @@ Volume=/run/udev/data:/run/udev/data:ro
 ReadOnly=true
 NoNewPrivileges=true
 
-Exec=--path.rootfs=/host \
+Exec=--path.procfs=/host/proc \
+     --path.sysfs=/host/sys \
      --collector.textfile.directory=/textfile \
      --web.listen-address=:9100 \
      --collector.disable-defaults \
      --collector.cpu \
      --collector.cpufreq \
      --collector.diskstats \
-     # --collector.filesystem is deliberately ABSENT. With / bind-mounted at
-     # /host, node_exporter sees tmpfs mounts twice — once as the container's
-     # own /tmp and once as /host/tmp, which --path.rootfs strips back to /tmp —
-     # and every scrape logged 14 "collected before with the same name and
-     # label values" errors. Nothing here needs it; adding it back means
-     # excluding the container's own mounts first.
+     # --collector.filesystem is deliberately ABSENT. It needs the host's
+     # root filesystem, which is no longer mounted; when it was, it saw tmpfs
+     # mounts twice and logged 14 duplicate-series errors every scrape.
      --collector.hwmon \
      --collector.loadavg \
      --collector.meminfo \
