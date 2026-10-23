@@ -9,12 +9,19 @@ Documentation=https://github.com/malahmen/arakyd
 
 [Service]
 Type=oneshot
+# StateDirectory= creates %S/arakyd (~/.local/state/arakyd) before the
+# sandbox is set up, and makes it the one writable path in it. The previous
+# `ExecStartPre=mkdir -p` could not: a ReadWritePaths= naming a missing
+# directory fails the namespace setup (226/NAMESPACE) before any Exec runs
+# (Kamino item 131).
+StateDirectory=arakyd
 # %h/.local/bin is on a user's PATH on Fedora/bazzite by default.
-ExecStartPre=/usr/bin/mkdir -p %h/.local/state/arakyd
-ExecStart=%h/.local/bin/arakyd.sh --write %h/.local/state/arakyd
+ExecStart=%h/.local/bin/arakyd.sh --write %S/arakyd
+# A sysfs read can hang in D state (amdgpu has done it); a oneshot that never
+# finishes is never started again by its timer. 20 s is far past a normal run.
+TimeoutStartSec=20s
 # Hardening: it reads sysfs and writes one file. It needs nothing else.
 PrivateNetwork=true
 ProtectSystem=strict
-ReadWritePaths=%h/.local/state/arakyd
 ProtectHome=read-only
 NoNewPrivileges=true

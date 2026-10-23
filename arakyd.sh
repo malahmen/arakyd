@@ -16,7 +16,8 @@
 #     into "CPU" needs a two-hop PromQL join through node_hwmon_chip_names, and
 #     the mapping from chip name to role is this machine's knowledge, not
 #     node_exporter's. So it is applied here, once.
-#   - amdgpu package power and core clock, which hwmon exposes and
+#   - amdgpu's package power (PPT - on an APU the whole package, CPU and GPU
+#     together, not the iGPU alone) and core clock, which hwmon exposes and
 #     node_exporter does not surface in a usable form.
 #
 # Output is the Prometheus text format, for node_exporter's textfile collector.
@@ -30,7 +31,7 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SELF="${0##*/}"
 
 # Test seam: the suite points these at a fabricated tree, because a runner has
@@ -56,6 +57,32 @@ _role_for() {
 # A label value must not contain a bare backslash, quote or newline.
 _esc() { printf '%s' "${1//\\/\\\\}" | sed 's/"/\\"/g' | tr -d '\n'; }
 
+# _fixed INT DIGITS — INT / 10^DIGITS as a decimal, sign kept whole.
+#
+# printf '%s.%03d' of $((m/1000)) and $((m%1000)) rendered -500 as "0.-500",
+# which node_exporter cannot parse - and one unparseable line drops the WHOLE
+# textfile, collector_success with it, so a single odd sensor blanked every
+# arakyd_* series (Kamino item 132).
+_fixed() {
+    local v="$1" n="$2" sign="" scale=1 i
+    if (( v < 0 )); then sign="-"; v=$(( -v )); fi
+    for (( i = 0; i < n; i++ )); do scale=$(( scale * 10 )); done
+    printf '%s%d.%0*d' "$sign" "$(( v / scale ))" "$n" "$(( v % scale ))"
+}
+
+# _device DIR — what the chip or card is attached to (a PCI address such as
+# 0000:c2:00.0, or a device name such as nvme0). Two chips can share a `name`
+# - two NVMe drives, two amdgpus - and without this their series were
+# identical and node_exporter dropped one (Kamino item 133).
+_device() {
+    local t
+    # A link, or nothing: `readlink -f` of a missing last component prints
+    # the path anyway, which would label a chip with no device link "device".
+    [[ -L "$1/device" ]] || return 0
+    t="$(readlink -f "$1/device" 2>/dev/null || true)"
+    printf '%s' "${t##*/}"
+}
+
 # _num FILE — the file's first line if it is an integer, else nothing. Guards
 # against a sensor that reads "N/A" or goes absent between glob and read.
 _num() {
@@ -65,7 +92,7 @@ _num() {
 }
 
 emit_temperatures() {
-    local d name role f idx lbl milli
+    local d name role dev f idx lbl milli
     printf '# HELP arakyd_temperature_celsius Sensor temperature, labelled by the role it reports on.\n'
     printf '# TYPE arakyd_temperature_celsius gauge\n'
     for d in "$SYSFS"/class/hwmon/hwmon*; do
@@ -73,6 +100,7 @@ emit_temperatures() {
         name="$(cat "$d/name" 2>/dev/null || true)"
         [[ -n "$name" ]] || continue
         role="$(_role_for "$name")"
+        dev="$(_device "$d")"
         for f in "$d"/temp*_input; do
             [[ -r "$f" ]] || continue
             milli="$(_num "$f")"; [[ -n "$milli" ]] || continue
@@ -81,32 +109,36 @@ emit_temperatures() {
             [[ -n "$lbl" ]] || lbl="temp${idx}"
             # Integer millidegrees to degrees, without bc: awk is already a
             # dependency of nothing here, so do it in the shell.
-            printf 'arakyd_temperature_celsius{role="%s",chip="%s",sensor="%s"} %s.%03d\n' \
-                "$(_esc "$role")" "$(_esc "$name")" "$(_esc "$lbl")" \
-                "$(( milli / 1000 ))" "$(( milli % 1000 ))"
+            printf 'arakyd_temperature_celsius{role="%s",chip="%s",device="%s",sensor="%s"} %s\n' \
+                "$(_esc "$role")" "$(_esc "$name")" "$(_esc "$dev")" "$(_esc "$lbl")" \
+                "$(_fixed "$milli" 3)"
         done
     done
 }
 
 emit_gpu() {
-    local c card uw hz used total
+    local c card dev uw hz used total
     printf '# HELP arakyd_gpu_memory_bytes iGPU memory by pool. On a unified-memory APU this is system RAM the GPU holds, not separate VRAM.\n'
     printf '# TYPE arakyd_gpu_memory_bytes gauge\n'
-    printf '# HELP arakyd_gpu_power_watts Average package power reported by amdgpu.\n'
+    printf '# HELP arakyd_gpu_power_watts Average package power (PPT) reported by amdgpu: on an APU, CPU and GPU together.\n'
     printf '# TYPE arakyd_gpu_power_watts gauge\n'
     printf '# HELP arakyd_gpu_clock_hertz iGPU shader clock.\n'
     printf '# TYPE arakyd_gpu_clock_hertz gauge\n'
-    for c in "$SYSFS"/class/drm/card*/device; do
+    # card[0-9]*: card1-DP-1 and the other connectors also have a device link.
+    for c in "$SYSFS"/class/drm/card[0-9]*/device; do
         [[ -d "$c" ]] || continue
         card="${c%/device}"; card="${card##*/}"
+        [[ "$card" =~ ^card[0-9]+$ ]] || continue
+        # `card` is the DRM minor, as unstable as hwmonN; `device` is not.
+        dev="$(_device "${c%/device}")"
         local pool
         for pool in gtt vram; do
             used="$(_num "${c}/mem_info_${pool}_used")"
             total="$(_num "${c}/mem_info_${pool}_total")"
             # vram_total is legitimately 0 on this APU — emitted, because "there
             # is no dedicated VRAM" is a fact worth being able to see.
-            [[ -n "$used" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",pool="%s",state="used"} %s\n' "$(_esc "$card")" "$pool" "$used"
-            [[ -n "$total" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",pool="%s",state="total"} %s\n' "$(_esc "$card")" "$pool" "$total"
+            [[ -n "$used" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",device="%s",pool="%s",state="used"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$pool" "$used"
+            [[ -n "$total" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",device="%s",pool="%s",state="total"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$pool" "$total"
         done
         # power and clock live on the card's hwmon child, whose index is as
         # unstable as any other.
@@ -114,9 +146,9 @@ emit_gpu() {
         for h in "$c"/hwmon/hwmon*; do
             [[ -d "$h" ]] || continue
             uw="$(_num "${h}/power1_average")"
-            [[ -n "$uw" ]] && printf 'arakyd_gpu_power_watts{card="%s"} %s.%06d\n' "$(_esc "$card")" "$(( uw / 1000000 ))" "$(( uw % 1000000 ))"
+            [[ -n "$uw" ]] && printf 'arakyd_gpu_power_watts{card="%s",device="%s"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$(_fixed "$uw" 6)"
             hz="$(_num "${h}/freq1_input")"
-            [[ -n "$hz" ]] && printf 'arakyd_gpu_clock_hertz{card="%s"} %s\n' "$(_esc "$card")" "$hz"
+            [[ -n "$hz" ]] && printf 'arakyd_gpu_clock_hertz{card="%s",device="%s"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$hz"
         done
     done
 }
@@ -127,7 +159,7 @@ emit_gpu() {
 # report" — and a dashboard that cannot tell them apart is the thing this whole
 # project is supposed to avoid.
 emit_meta() {
-    local ok="$1" started="$2" chips=0 d
+    local ok="$1" started="$2" n_temp="$3" n_gpu="$4" chips=0 d
     # Counted by iterating, not by `find -name 'hwmon*'`: that pattern also
     # matches the PARENT directory class/hwmon, which made every count one too
     # high. And counting only chips with a readable `name` means this number is
@@ -138,7 +170,11 @@ emit_meta() {
     printf '# HELP arakyd_collector_success Whether the last collection completed.\n'
     printf '# TYPE arakyd_collector_success gauge\n'
     printf 'arakyd_collector_success %s\n' "$ok"
-    printf '# HELP arakyd_collector_last_run_seconds Unix time of the last collection.\n'
+    printf '# HELP arakyd_collector_samples Samples the last collection produced, per section: 0 where a section had nothing to read.\n'
+    printf '# TYPE arakyd_collector_samples gauge\n'
+    printf 'arakyd_collector_samples{section="temperatures"} %s\n' "$n_temp"
+    printf 'arakyd_collector_samples{section="gpu"} %s\n' "$n_gpu"
+    printf '# HELP arakyd_collector_last_run_seconds Unix time of the last collection. A file that stopped being rewritten keeps being served with this value: compare it with time().\n'
     printf '# TYPE arakyd_collector_last_run_seconds gauge\n'
     printf 'arakyd_collector_last_run_seconds %s\n' "$started"
     printf '# HELP arakyd_collector_hwmon_chips Number of hwmon chips found.\n'
@@ -149,18 +185,37 @@ emit_meta() {
     printf 'arakyd_build_info{version="%s"} 1\n' "$(_esc "$VERSION")"
 }
 
+# _samples TEXT — its sample lines, not counting # HELP / # TYPE.
+_samples() { grep -cvE '^(#|[[:space:]]*$)' <<<"$1" || true; }
+
+# _gpu_expected — a card with amdgpu's memory files: its readings should be
+# there, and none is a failure rather than a host with no such GPU.
+_gpu_expected() {
+    local c
+    for c in "$SYSFS"/class/drm/card[0-9]*/device; do
+        [[ -e "${c}/mem_info_gtt_total" ]] && return 0
+    done
+    return 1
+}
+
 collect() {
-    local started ok=0 body samples
+    local started ok=0 temps gpu n_temp n_gpu
     started="$(date +%s)"
-    body="$( { emit_temperatures; emit_gpu; } 2>/dev/null || true )"
+    temps="$( { emit_temperatures; } 2>/dev/null || true )"
+    gpu="$( { emit_gpu; } 2>/dev/null || true )"
     # Counted in SAMPLES, not bytes. emit_* always print their # HELP and
     # # TYPE headers, so "is the output non-empty" was true even when nothing
     # at all had been read — success could never be 0, which made the metric
     # that exists to detect a broken collector unable to detect one.
-    samples="$(grep -cvE '^(#|[[:space:]]*$)' <<<"$body" || true)"
-    [[ "${samples:-0}" -gt 0 ]] && ok=1
-    [[ -n "$body" ]] && printf '%s\n' "$body"
-    emit_meta "$ok" "$started"
+    #
+    # And per section: one temperature used to make the whole run a success
+    # with every GPU reading gone (Kamino item 131). Success now needs a
+    # temperature, and a GPU reading wherever a GPU's files are there to read.
+    n_temp="$(_samples "$temps")"; n_gpu="$(_samples "$gpu")"
+    if (( ${n_temp:-0} > 0 )) && { (( ${n_gpu:-0} > 0 )) || ! _gpu_expected; }; then ok=1; fi
+    [[ -n "$temps" ]] && printf '%s\n' "$temps"
+    [[ -n "$gpu" ]] && printf '%s\n' "$gpu"
+    emit_meta "$ok" "$started" "${n_temp:-0}" "${n_gpu:-0}"
 }
 
 usage() {
@@ -189,6 +244,11 @@ main() {
             [[ -n "$dir" ]] || { echo "[error] --write needs a directory" >&2; exit 1; }
             [[ -d "$dir" ]] || { echo "[error] not a directory: ${dir}" >&2; exit 1; }
             out="${dir%/}/arakyd.prom"
+            # A run killed mid-write (TimeoutStartSec, a reboot) leaves its
+            # temp file behind, since no trap runs on SIGKILL. node_exporter
+            # reads only *.prom, so they are clutter, not errors - cleared
+            # here once they are a minute old.
+            find "$dir" -maxdepth 1 -name 'arakyd.prom.??????' -mmin +1 -delete 2>/dev/null || true
             # Atomic: node_exporter reads the whole file on scrape and a partial
             # read is a parse error, so it must never see one being written.
             tmp="$(mktemp "${out}.XXXXXX")"
@@ -206,7 +266,7 @@ main() {
                 printf '  %-28s role=%s\n' "$name" "$(_role_for "$name")"
                 n=$((n + 1))
             done
-            for d in "$SYSFS"/class/drm/card*/device; do
+            for d in "$SYSFS"/class/drm/card[0-9]*/device; do
                 [[ -f "${d}/mem_info_gtt_total" ]] || continue
                 printf '  %-28s gtt_total=%s bytes\n' "$(basename "$(dirname "$d")")" "$(_num "${d}/mem_info_gtt_total")"
                 n=$((n + 1))

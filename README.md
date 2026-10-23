@@ -29,24 +29,42 @@ the CPU, `amdgpu` the iGPU, `cros_ec` the board controller — is this machine's
 knowledge, not `node_exporter`'s. So it is applied once, here.
 
 **amdgpu exposes more than heat.** Package power and shader clock are in hwmon
-and are not surfaced usably.
+and are not surfaced usably. The power is amdgpu's `PPT` (package power
+tracking), which on an APU is the whole package - CPU and GPU together - not
+the iGPU alone.
 
 ## What it emits
 
 | Metric | Notes |
 | --- | --- |
-| `arakyd_temperature_celsius{role,chip,sensor}` | `role` is one of `cpu`, `igpu`, `nvme`, `board`, `board_ec`, `nic`, `wifi`, `other` |
-| `arakyd_gpu_memory_bytes{card,pool,state}` | `pool` is `gtt` or `vram`; `state` is `used` or `total` |
-| `arakyd_gpu_power_watts{card}` | from `power1_average` |
-| `arakyd_gpu_clock_hertz{card}` | from `freq1_input` |
+| `arakyd_temperature_celsius{role,chip,device,sensor}` | `role` is one of `cpu`, `igpu`, `nvme`, `board`, `board_ec`, `nic`, `wifi`, `other`. `device` is what the chip is attached to (`0000:c2:00.0`, `nvme0`), so two chips with one name - two NVMe drives, two GPUs - are two series rather than one dropped |
+| `arakyd_gpu_memory_bytes{card,device,pool,state}` | `pool` is `gtt` or `vram`; `state` is `used` or `total`. `card` is the DRM minor (`card1`), which can change across boots; `device` is the PCI address, which does not |
+| `arakyd_gpu_power_watts{card,device}` | from `power1_average`: package power (PPT), CPU and GPU together on an APU |
+| `arakyd_gpu_clock_hertz{card,device}` | from `freq1_input` |
 | `arakyd_collector_success` | **1 or 0.** See below — this one earns its keep |
-| `arakyd_collector_last_run_seconds`, `arakyd_collector_hwmon_chips`, `arakyd_build_info` | |
+| `arakyd_collector_samples{section}` | samples the last run produced, for `temperatures` and `gpu` |
+| `arakyd_collector_last_run_seconds` | Unix time of the last run. **The one that says the collector stopped:** see below |
+| `arakyd_collector_hwmon_chips`, `arakyd_build_info` | |
+
+A negative reading is written as one (`-0.500`). It used to come out as
+`0.-500`, which node_exporter cannot parse - and one bad line drops the whole
+file, `arakyd_collector_success` with it.
 
 `arakyd_collector_success` exists because `up` is not enough. `up` tells you
 the host was reachable. It does not tell you this collector ran. Without it,
 "exporter up, collector silently failing" is indistinguishable from "nothing to
 report" — and a dashboard that cannot tell those apart is the thing this whole
-project is meant to avoid.
+project is meant to avoid. It is 1 only when a temperature was read **and**,
+wherever a GPU's memory files are present, a GPU reading too: one sensor used
+to be enough, with every GPU reading gone.
+
+**But `success` cannot see a collector that stopped.** It is written by the
+collector, so it says how the last run went - and when there is no next run
+(timer disabled, script removed, the unit failing before it starts, a hung
+read), node_exporter keeps serving the last file, `success 1` and plausible
+temperatures included, for as long as the file exists. What does change is its
+age: `time() - arakyd_collector_last_run_seconds` grows. The timer runs every
+30 s, so more than 90 is a stopped collector.
 
 ## Usage
 
@@ -72,7 +90,7 @@ declarative part.
 
 ```sh
 install -Dm755 arakyd.sh ~/.local/bin/arakyd.sh
-mkdir -p ~/.config/containers/systemd ~/.local/state/arakyd
+mkdir -p ~/.config/containers/systemd ~/.config/systemd/user ~/.local/state/arakyd
 cp quadlet/arakyd-node-exporter.container ~/.config/containers/systemd/
 cp quadlet/arakyd-collector.service quadlet/arakyd-collector.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -106,6 +124,11 @@ if you move the state directory:
   onto that uid, so the container reads exactly what you can read — without
   overriding the image's user or hardcoding a uid.
 
+Because the container reads what you can read, it is given only what it needs:
+`/proc`, `/sys`, the textfile directory and udev's database. It used to mount
+the whole root filesystem at `/host`, which put `~/.ssh` behind an
+unauthenticated `:9100`; with the two mounts it serves the same metrics.
+
 ## Getting it into Grafana
 
 Two files in `deploy/`, both of which belong in the **`manifests`** repository,
@@ -117,17 +140,16 @@ deliberate step, not an oversight:
 | `deploy/alloy-scrape-hosts.alloy` | `apps/alloy.yaml`, inside the existing Alloy config block |
 | `deploy/grafana-hosts-dashboard.json` | `apps/grafana.yaml`, under `dashboards: kuat:` |
 
-**The dashboard's expressions are not yet verified against live Mimir.** The
-existing dashboards in `apps/grafana.yaml` carry a comment saying every
-expression in them was executed before committing; these have not been, because
-nothing is scraping yet. Verify them, then commit.
+Both are live: the dashboard is `kuat / Hosts` in `apps/grafana.yaml`, and its
+panels are what this README's queries describe. A change here is copied across
+by hand; the copy in `manifests` is the one Grafana loads.
 
 ### Both hosts on one dashboard, on purpose
 
 If corelia's panels are empty while meksha's are full, the monitoring is fine
 and corelia is off. If **both** are empty, the monitoring is broken. The
-dashboard diagnoses itself, and it costs nothing, since meksha has no host
-metrics either.
+dashboard diagnoses itself. meksha runs node_exporter (kuat's `node_exporter`
+role) but not arakyd's collector, so its `arakyd_*` panels are empty by design.
 
 ### What `up` can and cannot tell you
 
@@ -135,7 +157,8 @@ metrics either.
 | --- | --- |
 | Host powered off | `up == 0` |
 | Host up, exporter not running | `up == 0` — **indistinguishable** from the above |
-| Host up, exporter up, collector broken | `up == 1` and `arakyd_collector_success == 0` |
+| Host up, exporter up, collector ran and read nothing | `up == 1` and `arakyd_collector_success == 0` |
+| Host up, exporter up, collector **stopped** | `up == 1` and `time() - arakyd_collector_last_run_seconds > 90`; `success` still reads 1 |
 | Scrape job removed or never applied | `absent(up{job="hosts"})` — a *monitoring* failure |
 
 And the trap: **Mimir's default lookback is 5 minutes**, so an instant query
@@ -148,7 +171,9 @@ rather than trusting an instant reading on a host that is allowed to be absent.
 Do not treat the two hosts alike. meksha unreachable is an incident; corelia
 unreachable is a desktop being off. The alert worth having on both is
 `absent(up{job="hosts"})` — that is the one that catches the scrape job being
-removed and nobody noticing.
+removed and nobody noticing. The other is the collector: `kuat / Hosts` alerts
+when `arakyd_collector_success` is 0, or the file is more than 90 s old, on a
+host whose exporter is up.
 
 ## Tests
 
@@ -156,7 +181,7 @@ removed and nobody noticing.
 tests/run-all.sh
 ```
 
-**25 checks.** No network, no root, and no dependence on this machine's
+**46 checks.** No network, no root, and no dependence on this machine's
 hardware: the collector runs against a fabricated sysfs tree, which is the only
 way to test something whose whole job is knowing about one particular machine.
 
