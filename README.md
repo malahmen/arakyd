@@ -88,6 +88,10 @@ corelia is **deliberately outside kuat's Ansible scope**, which is the server
 only. So this is installed by hand and stays that way; the units below are the
 declarative part.
 
+### First install
+
+From the repository's folder:
+
 ```sh
 install -Dm755 arakyd.sh ~/.local/bin/arakyd.sh
 mkdir -p ~/.config/containers/systemd ~/.config/systemd/user ~/.local/state/arakyd
@@ -100,6 +104,38 @@ loginctl enable-linger "$USER"        # survive logout
 
 curl -s localhost:9100/metrics | grep '^arakyd_'
 ```
+
+### Updating
+
+From the repository's folder, after `git pull`. Copy the three files, reload,
+restart the exporter, and run the collector once:
+
+```sh
+install -m755 arakyd.sh ~/.local/bin/arakyd.sh
+cp quadlet/arakyd-collector.service quadlet/arakyd-collector.timer ~/.config/systemd/user/
+cp quadlet/arakyd-node-exporter.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user restart arakyd-node-exporter
+systemctl --user start arakyd-collector.service
+```
+
+That is all. The folders, the timer being enabled and lingering were set by
+the first install and stay set; run none of that again. The exporter is
+restarted because a container keeps the mounts it started with - a changed
+`.container` applies only to a new one. The collector needs no restart: its
+next run uses the new unit, and the last line runs it now instead of in 30 s.
+
+Then check:
+
+```sh
+~/.local/bin/arakyd.sh --version                                  # the new version
+systemctl --user is-active arakyd-collector.timer arakyd-node-exporter   # active, active
+systemctl --user status arakyd-collector.service --no-pager | grep -E 'Active|status='
+curl -s localhost:9100/metrics | grep -E '^arakyd_collector_(success|samples)'
+```
+
+`arakyd_collector_success 1`, and both `samples` lines above 0. On the
+dashboard, panel 3 reads OK.
 
 The container image tag is **pinned**. Bump it deliberately — a monitoring
 agent that changes underneath you is one you cannot trust a graph from.
