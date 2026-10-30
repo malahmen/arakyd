@@ -18,7 +18,13 @@
 #     node_exporter's. So it is applied here, once.
 #   - amdgpu's package power (PPT - on an APU the whole package, CPU and GPU
 #     together, not the iGPU alone) and core clock, which hwmon exposes and
-#     node_exporter does not surface in a usable form.
+#     node_exporter does not surface in a usable form; and how busy the iGPU
+#     is (amdgpu's gpu_busy_percent), which node_exporter has no collector for.
+#   - Disk size and free space of the filesystems that hold the data. On an
+#     image-based host (Bazzite) the root is a read-only composefs and the data
+#     is on /var; node_exporter runs here without its filesystem collector
+#     (the host root is not mounted into its container), so these are read
+#     with df, on the host, for the paths in ARAKYD_FILESYSTEMS.
 #
 # Output is the Prometheus text format, for node_exporter's textfile collector.
 # Nothing is served; nothing listens. A timer writes the file, node_exporter
@@ -31,12 +37,16 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 SELF="${0##*/}"
 
 # Test seam: the suite points these at a fabricated tree, because a runner has
 # no Strix Halo and this host cannot be made to have different hardware.
 SYSFS="${ARAKYD_SYSFS:-/sys}"
+# The filesystems whose size and free space are reported, by a path on each
+# (space-separated). /var: where an image-based host keeps its data. Set but
+# empty means none (the test suite: free space moves between two runs).
+FILESYSTEMS="${ARAKYD_FILESYSTEMS-/var}"
 
 # chip `name` -> role. The one genuinely machine-specific thing here, and the
 # reason this project is not generic. A name not listed is still collected, with
@@ -117,13 +127,15 @@ emit_temperatures() {
 }
 
 emit_gpu() {
-    local c card dev uw hz used total
+    local c card dev uw hz used total busy
     printf '# HELP arakyd_gpu_memory_bytes iGPU memory by pool. On a unified-memory APU this is system RAM the GPU holds, not separate VRAM.\n'
     printf '# TYPE arakyd_gpu_memory_bytes gauge\n'
     printf '# HELP arakyd_gpu_power_watts Average package power (PPT) reported by amdgpu: on an APU, CPU and GPU together.\n'
     printf '# TYPE arakyd_gpu_power_watts gauge\n'
     printf '# HELP arakyd_gpu_clock_hertz iGPU shader clock.\n'
     printf '# TYPE arakyd_gpu_clock_hertz gauge\n'
+    printf '# HELP arakyd_gpu_busy_ratio How busy the iGPU is, 0 to 1 (amdgpu gpu_busy_percent: a sample, not an average).\n'
+    printf '# TYPE arakyd_gpu_busy_ratio gauge\n'
     # card[0-9]*: card1-DP-1 and the other connectors also have a device link.
     for c in "$SYSFS"/class/drm/card[0-9]*/device; do
         [[ -d "$c" ]] || continue
@@ -140,6 +152,8 @@ emit_gpu() {
             [[ -n "$used" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",device="%s",pool="%s",state="used"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$pool" "$used"
             [[ -n "$total" ]] && printf 'arakyd_gpu_memory_bytes{card="%s",device="%s",pool="%s",state="total"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$pool" "$total"
         done
+        busy="$(_num "${c}/gpu_busy_percent")"
+        [[ -n "$busy" ]] && printf 'arakyd_gpu_busy_ratio{card="%s",device="%s"} %s\n' "$(_esc "$card")" "$(_esc "$dev")" "$(_fixed "$busy" 2)"
         # power and clock live on the card's hwmon child, whose index is as
         # unstable as any other.
         local h
@@ -153,13 +167,32 @@ emit_gpu() {
     done
 }
 
+# emit_filesystems — size and free bytes of the filesystem holding each path
+# in FILESYSTEMS, labelled by its mount point. Free is what an ordinary user
+# can still write (df's "avail"), not counting the root-reserved blocks.
+emit_filesystems() {
+    local p line size avail mnt
+    printf '# HELP arakyd_filesystem_size_bytes Size of the filesystem holding a configured path.\n'
+    printf '# TYPE arakyd_filesystem_size_bytes gauge\n'
+    printf '# HELP arakyd_filesystem_avail_bytes Free space on it an ordinary user can write.\n'
+    printf '# TYPE arakyd_filesystem_avail_bytes gauge\n'
+    for p in $FILESYSTEMS; do
+        [[ -e "$p" ]] || continue
+        line="$(df -P -B1 -- "$p" 2>/dev/null | awk 'NR == 2 { print $2, $4, $6 }')" || continue
+        read -r size avail mnt <<<"$line"
+        [[ "$size" =~ ^[0-9]+$ && "$avail" =~ ^[0-9]+$ && -n "$mnt" ]] || continue
+        printf 'arakyd_filesystem_size_bytes{mountpoint="%s"} %s\n' "$(_esc "$mnt")" "$size"
+        printf 'arakyd_filesystem_avail_bytes{mountpoint="%s"} %s\n' "$(_esc "$mnt")" "$avail"
+    done
+}
+
 # Meta, and the reason it exists: node_exporter being up tells you the host is
 # reachable. It does not tell you this collector ran. Without these, "exporter
 # up but collector silently failing" is indistinguishable from "nothing to
 # report" — and a dashboard that cannot tell them apart is the thing this whole
 # project is supposed to avoid.
 emit_meta() {
-    local ok="$1" started="$2" n_temp="$3" n_gpu="$4" chips=0 d
+    local ok="$1" started="$2" n_temp="$3" n_gpu="$4" n_fs="${5:-0}" chips=0 d
     # Counted by iterating, not by `find -name 'hwmon*'`: that pattern also
     # matches the PARENT directory class/hwmon, which made every count one too
     # high. And counting only chips with a readable `name` means this number is
@@ -174,6 +207,7 @@ emit_meta() {
     printf '# TYPE arakyd_collector_samples gauge\n'
     printf 'arakyd_collector_samples{section="temperatures"} %s\n' "$n_temp"
     printf 'arakyd_collector_samples{section="gpu"} %s\n' "$n_gpu"
+    printf 'arakyd_collector_samples{section="filesystems"} %s\n' "$n_fs"
     printf '# HELP arakyd_collector_last_run_seconds Unix time of the last collection. A file that stopped being rewritten keeps being served with this value: compare it with time().\n'
     printf '# TYPE arakyd_collector_last_run_seconds gauge\n'
     printf 'arakyd_collector_last_run_seconds %s\n' "$started"
@@ -199,10 +233,11 @@ _gpu_expected() {
 }
 
 collect() {
-    local started ok=0 temps gpu n_temp n_gpu
+    local started ok=0 temps gpu fs n_temp n_gpu n_fs
     started="$(date +%s)"
     temps="$( { emit_temperatures; } 2>/dev/null || true )"
     gpu="$( { emit_gpu; } 2>/dev/null || true )"
+    fs="$( { emit_filesystems; } 2>/dev/null || true )"
     # Counted in SAMPLES, not bytes. emit_* always print their # HELP and
     # # TYPE headers, so "is the output non-empty" was true even when nothing
     # at all had been read — success could never be 0, which made the metric
@@ -211,11 +246,14 @@ collect() {
     # And per section: one temperature used to make the whole run a success
     # with every GPU reading gone (Kamino item 131). Success now needs a
     # temperature, and a GPU reading wherever a GPU's files are there to read.
-    n_temp="$(_samples "$temps")"; n_gpu="$(_samples "$gpu")"
+    # Filesystems do not decide success: they are counted, and a missing
+    # section shows as 0 here.
+    n_temp="$(_samples "$temps")"; n_gpu="$(_samples "$gpu")"; n_fs="$(_samples "$fs")"
     if (( ${n_temp:-0} > 0 )) && { (( ${n_gpu:-0} > 0 )) || ! _gpu_expected; }; then ok=1; fi
     [[ -n "$temps" ]] && printf '%s\n' "$temps"
     [[ -n "$gpu" ]] && printf '%s\n' "$gpu"
-    emit_meta "$ok" "$started" "${n_temp:-0}" "${n_gpu:-0}"
+    [[ -n "$fs" ]] && printf '%s\n' "$fs"
+    emit_meta "$ok" "$started" "${n_temp:-0}" "${n_gpu:-0}" "${n_fs:-0}"
 }
 
 usage() {
@@ -233,6 +271,9 @@ USAGE
 ENVIRONMENT
   ARAKYD_SYSFS                 sysfs root (default /sys); the test suite points
                                this at a fabricated tree
+  ARAKYD_FILESYSTEMS           paths whose filesystems' size and free space are
+                               reported, space-separated (default /var; empty:
+                               none)
 HELPDOC
 }
 
