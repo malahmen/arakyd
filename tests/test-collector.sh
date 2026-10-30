@@ -228,6 +228,21 @@ chk "it exits 0 when something was found" 0 "$chk_rc"
 if grep -qE '^ +k10temp +role=cpu$' <<<"$chk_out"; then ok "  names each chip with its role"; else bad "--check did not list k10temp role=cpu"; fi
 if grep -qE '^ +card1 +gtt_total=67147296768 bytes$' <<<"$chk_out"; then ok "  and the GPU's GTT size"; else bad "--check did not list card1's GTT"; fi
 
+echo "## GPU busy, and disk size and free space"
+printf '37\n' > "$A/class/drm/card1/device/gpu_busy_percent"
+out_b="$(ARAKYD_FILESYSTEMS="$T" run "$A" --print)"
+has "busy percent becomes a 0-1 ratio"  'arakyd_gpu_busy_ratio{card="card1",device=""} 0.37' "$out_b"
+mnt="$(df -P -B1 -- "$T" | awk 'NR == 2 { print $6 }')"
+size="$(df -P -B1 -- "$T" | awk 'NR == 2 { print $2 }')"
+has "a filesystem's size, by its mount point" "arakyd_filesystem_size_bytes{mountpoint=\"$mnt\"} $size" "$out_b"
+if grep -qE "^arakyd_filesystem_avail_bytes\{mountpoint=\"$mnt\"\} [0-9]+$" <<<"$out_b"; then ok "  and its free bytes"; else bad "no avail line for $mnt"; fi
+has "  counted in its own section"       'arakyd_collector_samples{section="filesystems"} 2' "$out_b"
+out_n="$(ARAKYD_FILESYSTEMS="$T/no-such-path" run "$A" --print)"
+if ! grep -q '^arakyd_filesystem_' <<<"$out_n"; then ok "a missing path is skipped"; else bad "a missing path produced a filesystem line"; fi
+has "  the section reads 0"              'arakyd_collector_samples{section="filesystems"} 0' "$out_n"
+has "  and does not fail the collection" 'arakyd_collector_success 1' "$out_n"
+rm -f "$A/class/drm/card1/device/gpu_busy_percent"
+
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
 echo "all checks passed"

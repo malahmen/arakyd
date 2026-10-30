@@ -41,8 +41,10 @@ the iGPU alone.
 | `arakyd_gpu_memory_bytes{card,device,pool,state}` | `pool` is `gtt` or `vram`; `state` is `used` or `total`. `card` is the DRM minor (`card1`), which can change across boots; `device` is the PCI address, which does not |
 | `arakyd_gpu_power_watts{card,device}` | from `power1_average`: package power (PPT), CPU and GPU together on an APU |
 | `arakyd_gpu_clock_hertz{card,device}` | from `freq1_input` |
+| `arakyd_gpu_busy_ratio{card,device}` | from amdgpu's `gpu_busy_percent`, as 0 to 1: a sample at collection time, not an average |
+| `arakyd_filesystem_size_bytes{mountpoint}`, `arakyd_filesystem_avail_bytes{mountpoint}` | the filesystems holding the paths in `ARAKYD_FILESYSTEMS` (default `/var`), by `df` on the host. Here, not from node_exporter: on Bazzite the root is a read-only composefs and the data is on `/var`, and node_exporter runs without its filesystem collector (the host root is not mounted into its container). `avail` is what an ordinary user can still write |
 | `arakyd_collector_success` | **1 or 0.** See below — this one earns its keep |
-| `arakyd_collector_samples{section}` | samples the last run produced, for `temperatures` and `gpu` |
+| `arakyd_collector_samples{section}` | samples the last run produced, for `temperatures`, `gpu` and `filesystems` (the last does not decide success) |
 | `arakyd_collector_last_run_seconds` | Unix time of the last run. **The one that says the collector stopped:** see below |
 | `arakyd_collector_hwmon_chips`, `arakyd_build_info` | |
 
