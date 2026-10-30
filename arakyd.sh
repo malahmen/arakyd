@@ -44,8 +44,9 @@ SELF="${0##*/}"
 # no Strix Halo and this host cannot be made to have different hardware.
 SYSFS="${ARAKYD_SYSFS:-/sys}"
 # The filesystems whose size and free space are reported, by a path on each
-# (space-separated). /var: where an image-based host keeps its data.
-FILESYSTEMS="${ARAKYD_FILESYSTEMS:-/var}"
+# (space-separated). /var: where an image-based host keeps its data. Set but
+# empty means none (the test suite: free space moves between two runs).
+FILESYSTEMS="${ARAKYD_FILESYSTEMS-/var}"
 
 # chip `name` -> role. The one genuinely machine-specific thing here, and the
 # reason this project is not generic. A name not listed is still collected, with
@@ -271,7 +272,8 @@ ENVIRONMENT
   ARAKYD_SYSFS                 sysfs root (default /sys); the test suite points
                                this at a fabricated tree
   ARAKYD_FILESYSTEMS           paths whose filesystems' size and free space are
-                               reported, space-separated (default /var)
+                               reported, space-separated (default /var; empty:
+                               none)
 HELPDOC
 }
 

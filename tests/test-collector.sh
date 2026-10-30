@@ -52,7 +52,10 @@ card() {
         [[ -n "${8:-}" ]] && printf '%s\n' "$8" > "$c/hwmon/hwmon99/freq1_input"
     fi
 }
-run() { ARAKYD_SYSFS="$1" bash "$ARA" "${@:2}"; }
+# No filesystems unless a check asks for them: free space moves between two
+# runs, and several checks compare two runs' output byte for byte (on CI the
+# runner's /var changed between them).
+run() { ARAKYD_SYSFS="$1" ARAKYD_FILESYSTEMS="${ARAKYD_FILESYSTEMS-}" bash "$ARA" "${@:2}"; }
 
 # --- a Strix-Halo-shaped tree ------------------------------------------------
 A="$T/a"
