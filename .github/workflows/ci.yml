@@ -18,6 +18,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Job names are DNS labels (Kamino item 286)
+        # The Gitea runner gives each job's container its name as a DNS alias;
+        # one that is not a DNS label crashes podman's DNS on meksha.
+        run: |
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 .github/check-job-names.py
 
       - name: tools
         # Installed rather than assumed. GitHub's runner image ships shellcheck;
